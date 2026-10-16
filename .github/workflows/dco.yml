@@ -24,7 +24,7 @@ jobs:
           missing=0
           while read -r commit; do
             author_email="$(git show -s --format=%ae "$commit")"
-            if [[ "$author_email" == *"dependabot[bot]@users.noreply.github.com" ]]; then
+            if [[ "$author_email" == "49699333+dependabot[bot]@users.noreply.github.com" ]]; then
               echo "Dependabot commit $commit is exempt from DCO trailers."
               continue
             fi
