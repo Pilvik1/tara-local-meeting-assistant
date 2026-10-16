@@ -1,0 +1,195 @@
+name: Build Tara Windows release
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-release.yml"
+      - "backend/**"
+      - "electron/**"
+      - "public/**"
+      - "scripts/**"
+      - "shared/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build and verify Windows artifacts
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/build-requirements.txt
+
+      - name: Install Node dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Audit Node dependencies
+        run: |
+          npm run audit:production
+          npm run audit:build
+
+      - name: Install backend and packager
+        run: python -m pip install -r backend/requirements.txt -r backend/build-requirements.txt
+
+      - name: Validate application
+        run: |
+          python -m pip check
+          python -m unittest discover -s backend/tests -v
+          npm run typecheck
+          npm run test:frontend
+          npm run lint
+          npm run build
+
+      - name: Build bundled backend
+        run: python -m PyInstaller --noconfirm --clean --distpath backend-dist --workpath build/pyinstaller backend/tara-backend.spec
+
+      - name: Install pinned local intelligence runtime
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "llama-win-cpu.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "llama-win-cpu"
+          Invoke-WebRequest -Uri "https://github.com/ggml-org/llama.cpp/releases/download/b10775/llama-b10775-bin-win-cpu-x64.zip" -OutFile $archive
+          $archiveHash = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($archiveHash -ne "1da037557b6bb588fc48a8d371b948ed6c4334831f23af8a0b084319e7e81a9b") {
+            throw "Pinned llama.cpp archive failed its SHA-256 integrity check"
+          }
+          Expand-Archive -Path $archive -DestinationPath $expanded -Force
+          $server = Get-ChildItem -Path $expanded -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+          if (-not $server) { throw "llama-server.exe was not present in the pinned archive" }
+          New-Item -ItemType Directory -Force local-runtime | Out-Null
+          Copy-Item -Path (Join-Path $server.Directory.FullName "*") -Destination local-runtime -Recurse -Force
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/llama.cpp/b10775/LICENSE" -OutFile "local-runtime/LICENSE-llama.cpp"
+          & "local-runtime/llama-server.exe" --version
+
+      - name: Smoke-test frozen backend and restart persistence
+        shell: pwsh
+        run: |
+          $env:TARA_DATA_DIR = Join-Path $env:RUNNER_TEMP "tara-release-data"
+          $env:TARA_LLAMA_SERVER_PATH = (Resolve-Path "local-runtime/llama-server.exe").Path
+          $stdout = Join-Path $env:RUNNER_TEMP "tara-backend.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "tara-backend.stderr.log"
+
+          function Start-TaraBackend {
+            return Start-Process -FilePath "backend-dist/tara-backend/tara-backend.exe" -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          }
+
+          function Wait-TaraBackend($process) {
+            for ($attempt = 0; $attempt -lt 80; $attempt++) {
+              if ($process.HasExited) { throw "Bundled backend exited early with code $($process.ExitCode)" }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 2
+                if ($health.ok -and $health.transcription.faster_whisper -and $health.analysis.runtime_available) { return }
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            throw "Bundled backend did not become healthy"
+          }
+
+          $backend = Start-TaraBackend
+          try {
+            Wait-TaraBackend $backend
+            python scripts/api-smoke.py create
+          } finally {
+            Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+          }
+
+          $backend = Start-TaraBackend
+          try {
+            Wait-TaraBackend $backend
+            python scripts/api-smoke.py verify
+          } finally {
+            Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "Bundled backend stdout:"
+            Get-Content $stdout -ErrorAction SilentlyContinue
+            Write-Host "Bundled backend stderr:"
+            Get-Content $stderr -ErrorAction SilentlyContinue
+          }
+
+      - name: Package installer and portable app
+        run: npx electron-builder --publish never
+
+      - name: Stage release assets and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-upload | Out-Null
+          $executables = Get-ChildItem release -File -Filter "*.exe"
+          if ($executables.Count -lt 2) { throw "Expected installer and portable executable" }
+          Copy-Item -Path $executables.FullName -Destination release-upload
+          Copy-Item THIRD_PARTY_NOTICES.md release-upload
+          $safeRef = "${{ github.ref_name }}" -replace '[^A-Za-z0-9._-]', '-'
+          Compress-Archive -Path $executables.FullName -DestinationPath "release-upload/Tara-$safeRef-Windows.zip" -Force
+          $checksums = foreach ($file in (Get-ChildItem release-upload -File | Where-Object { $_.Extension -in '.exe', '.zip' } | Sort-Object Name)) {
+            $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          Set-Content -Path "release-upload/SHA256SUMS.txt" -Value $checksums -Encoding ascii
+
+      - name: Cache release assets for publication
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: release-upload
+          key: tara-release-${{ github.sha }}
+          enableCrossOsArchive: true
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout source for SBOM
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Restore verified Windows assets
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: release-upload
+          key: tara-release-${{ github.sha }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
+      - name: Generate source SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: release-upload/tara-source.spdx.json
+          upload-artifact: false
+
+      - name: Publish release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: release-upload/*

@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a focused Tara improvement
+title: "Feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem without including real meeting data.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What observable behavior would solve the problem?
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and maintenance impact
+      description: Does this add network access, model downloads, data migrations, or packaging requirements?
+    validations:
+      required: true
