@@ -85,6 +85,10 @@ silent hosted-AI fallback. Network activity is limited to explicit model/release
 downloads and optional operator-configured SMTP delivery. See [PRIVACY.md](PRIVACY.md)
 for storage, deletion, network, and recording-consent boundaries.
 
+Packaged launches additionally use a fresh desktop API token and backend
+instance identity, preventing unrelated local web content from driving Tara's
+loopback API.
+
 ## Using Tara with a headset
 
 For Google Meet, Microsoft Teams, Zoom, or similar calls:

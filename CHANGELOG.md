@@ -18,6 +18,8 @@ Tara follows Semantic Versioning. Beta releases may contain breaking changes.
 
 - moved the Windows application ID to the repository-owned namespace;
 - enabled Electron renderer sandboxing and denied untrusted navigation/windows;
+- authenticated each packaged desktop session with a fresh local API token and
+  verified backend instance identity;
 - refreshed dependency locks to eliminate known high and critical build-chain findings.
 
 ### Provenance
