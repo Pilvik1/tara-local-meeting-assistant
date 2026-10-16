@@ -27,7 +27,7 @@
     "check": "npm run typecheck && npm run test:frontend && npm run lint && npm run build",
     "audit:production": "npm audit --omit=dev",
     "audit:build": "npm audit --audit-level=high",
-    "test:backend": ".venv/bin/python -m unittest discover -s backend/tests -v",
+    "test:backend": "python -m unittest discover -s backend/tests -v",
     "test:frontend": "vitest run",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",

@@ -3,16 +3,6 @@ name: Build Tara Windows release
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/workflows/desktop-release.yml"
-      - "backend/**"
-      - "electron/**"
-      - "public/**"
-      - "scripts/**"
-      - "shared/**"
-      - "src/**"
-      - "package.json"
-      - "package-lock.json"
   push:
     tags:
       - "v*"
