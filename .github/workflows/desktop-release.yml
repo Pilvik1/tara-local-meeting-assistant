@@ -130,10 +130,19 @@ jobs:
           New-Item -ItemType Directory -Force release-upload | Out-Null
           $executables = Get-ChildItem release -File -Filter "*.exe"
           if ($executables.Count -lt 2) { throw "Expected installer and portable executable" }
-          Copy-Item -Path $executables.FullName -Destination release-upload
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          foreach ($executable in $executables) {
+            $targetName = if ($executable.Name -like "*Setup*") {
+              "Tara.Setup.$version.exe"
+            } else {
+              "Tara.$version.exe"
+            }
+            Copy-Item -Path $executable.FullName -Destination (Join-Path "release-upload" $targetName)
+          }
           Copy-Item THIRD_PARTY_NOTICES.md release-upload
           $safeRef = "${{ github.ref_name }}" -replace '[^A-Za-z0-9._-]', '-'
-          Compress-Archive -Path $executables.FullName -DestinationPath "release-upload/Tara-$safeRef-Windows.zip" -Force
+          $stagedExecutables = Get-ChildItem release-upload -File -Filter "*.exe"
+          Compress-Archive -Path $stagedExecutables.FullName -DestinationPath "release-upload/Tara-$safeRef-Windows.zip" -Force
           $checksums = foreach ($file in (Get-ChildItem release-upload -File | Where-Object { $_.Extension -in '.exe', '.zip' } | Sort-Object Name)) {
             $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($file.Name)"
